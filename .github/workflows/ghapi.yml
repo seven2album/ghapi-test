@@ -91,6 +91,8 @@ jobs:
 
   ai_job:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     if: >-
       github.event_name == 'repository_dispatch'
       && github.repository != 'japer-technology/github-minimum-intelligence'
@@ -98,6 +100,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          node-version: '24'
 
       - name: Run GMI
         env:
