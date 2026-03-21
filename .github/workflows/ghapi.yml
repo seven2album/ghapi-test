@@ -67,7 +67,7 @@ on:
   #    repository, or upgrades it when a newer version is available.
   #    Safe to re-run; it installs, upgrades, or skips as appropriate.
   workflow_dispatch:
-  
+
   repository_dispatch:
     types: [tg_webhook] # 這裡要跟 Worker 寫的一樣
 
@@ -88,27 +88,6 @@ permissions:
 # JOBS
 # ══════════════════════════════════════════════════════════════════════════════
 jobs:
-
-  ai_job:
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-    if: >-
-      github.event_name == 'repository_dispatch'
-      && github.repository != 'japer-technology/github-minimum-intelligence'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          node-version: '24'
-
-      - name: Run GMI
-        env:
-          # 讀取從 Worker 傳過來的指令
-          USER_PROMPT: ${{ github.event.client_payload.text }}
-          TG_CHAT_ID: ${{ github.event.client_payload.chat_id }}
-        run: node index.js
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 1 — run-install
@@ -315,16 +294,18 @@ jobs:
     # than cancelling it (cancel-in-progress: false). The group key includes
     # the issue number so different issues run in parallel.
     concurrency:
-      group: ghapi-${{ github.repository }}-issue-${{ github.event.issue.number }}
+      group: ghapi-${{ github.repository }}-issue-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.chat_id || github.event.issue.number }}
       cancel-in-progress: false
 
     # Trigger guard:
     #   • Run on new issues.
     #   • Run on issue comments, BUT skip comments posted by bots (the agent
     #     itself) to avoid infinite loops.
+    #   • Run on Telegram webhook repository_dispatch.
     if: >-
       (github.event_name == 'issues')
       || (github.event_name == 'issue_comment' && !endsWith(github.event.comment.user.login, '[bot]'))
+      || (github.event_name == 'repository_dispatch' && github.event.action == 'tg_webhook')
     steps:
 
       # 1. AUTHORIZATION — verify the actor has write-level (or higher) access
@@ -334,6 +315,7 @@ jobs:
       #    file so the agent can later replace it with 👍 on completion.
       - name: Authorize
         id: authorize
+        if: github.event_name != 'repository_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -363,7 +345,7 @@ jobs:
       # 2. REJECTION FEEDBACK — if authorization failed, add a 👎 reaction so
       #    the user gets immediate visual feedback that their request was denied.
       - name: Reject
-        if: ${{ failure() && steps.authorize.outcome == 'failure' }}
+        if: ${{ failure() && steps.authorize.outcome == 'failure' && github.event_name != 'repository_dispatch' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -435,6 +417,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun .ghapi/lifecycle/agent.ts
 
