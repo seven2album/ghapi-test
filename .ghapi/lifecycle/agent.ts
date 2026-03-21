@@ -106,14 +106,17 @@ const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH!, "utf-8"));
 // "issues" for new issues, "issue_comment" for replies on existing issues.
 const eventName = process.env.GITHUB_EVENT_NAME!;
 
+// Identify if this is a Telegram webhook invocation.
+const isTelegram = eventName === "repository_dispatch" && event.action === "tg_webhook";
+
 // "owner/repo" format — used when calling the GitHub REST API via `gh api`.
 const repo = process.env.GITHUB_REPOSITORY!;
 
 // Fall back to "main" if the repository's default branch is not set in the event.
 const defaultBranch = event.repository?.default_branch ?? "main";
 
-// The issue number is present on both the `issues` and `issue_comment` payloads.
-const issueNumber: number = event.issue.number;
+// Map Telegram chat ID to issueNumber if triggered by Telegram.
+const issueNumber: number = isTelegram ? event.client_payload.chat_id : event.issue.number;
 
 // Read the committed `.pi` defaults and pass them explicitly to the runtime.
 // This prevents provider/model drift from host-level config (for example a
@@ -175,6 +178,21 @@ async function gh(...args: string[]): Promise<string> {
   return stdout;
 }
 
+async function sendTelegramMessage(chatId: number, text: string) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.warn("TELEGRAM_BOT_TOKEN is not set, skipping Telegram reply.");
+    return;
+  }
+  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text })
+  });
+  if (!res.ok) {
+    console.error("Failed to send Telegram message:", await res.text());
+  }
+}
 
 async function main() {
   // ─── Restore reaction state from Authorize step ─────────────────────
@@ -200,10 +218,14 @@ async function main() {
     // Use the webhook payload directly to avoid two `gh` API round-trips (~2–4 s).
     // GitHub truncates string fields at 65 536 characters in webhook payloads, so
     // we fall back to the API only when the body hits that limit.
-    const title = event.issue.title;
-    let body: string = event.issue.body ?? "";
-    if (body.length >= 65536) {
-      body = await gh("issue", "view", String(issueNumber), "--json", "body", "--jq", ".body");
+    let title = "";
+    let body = "";
+    if (!isTelegram) {
+      title = event.issue.title;
+      body = event.issue.body ?? "";
+      if (body.length >= 65536) {
+        body = await gh("issue", "view", String(issueNumber), "--json", "body", "--jq", ".body");
+      }
     }
 
     // ── Resolve or create session mapping ───────────────────────────────────────
@@ -248,6 +270,8 @@ async function main() {
     let prompt: string;
     if (eventName === "issue_comment") {
       prompt = event.comment.body ?? "";
+    } else if (isTelegram) {
+      prompt = event.client_payload.text ?? "";
     } else {
       prompt = `${title}\n\n${body}`;
     }
@@ -257,7 +281,7 @@ async function main() {
     // AI agent.  If the issue title (for new issues) or comment body (for comments)
     // starts with any of these characters, exit cleanly without responding so that
     // the designated agent can react instead.
-    const textToCheck = eventName === "issue_comment" ? event.comment.body : title;
+    const textToCheck = isTelegram ? prompt : (eventName === "issue_comment" ? event.comment.body : title);
     if (textToCheck && RESERVED_PREFIXES.has(textToCheck[0])) {
       console.log(`Skipping: first character "${textToCheck[0]}" is a reserved prefix for another agent.`);
       succeeded = true;
@@ -278,10 +302,7 @@ async function main() {
     };
     const requiredKeyName = providerKeyMap[configuredProvider];
     if (requiredKeyName && !process.env[requiredKeyName]) {
-      await gh(
-        "issue", "comment", String(issueNumber),
-        "--body",
-        `## ⚠️ Missing API Key: \`${requiredKeyName}\`\n\n` +
+      const errorBody = `## ⚠️ Missing API Key: \`${requiredKeyName}\`\n\n` +
         `The configured provider is \`${configuredProvider}\`, but the \`${requiredKeyName}\` secret is not available to this workflow run.\n\n` +
         `### How to fix\n\n` +
         `**Option A — Repository secret** _(simplest)_\n` +
@@ -292,8 +313,13 @@ async function main() {
         `1. Go to your **Organization Settings → Secrets and variables → Actions**\n` +
         `2. Click the \`${requiredKeyName}\` secret → **Repository access**\n` +
         `3. Add **this repository** to the selected repositories list\n\n` +
-        `Once the secret is accessible, re-trigger this workflow by posting a new comment on this issue.`
-      );
+        `Once the secret is accessible, re-trigger this workflow.`;
+
+      if (isTelegram) {
+        await sendTelegramMessage(issueNumber, errorBody);
+      } else {
+        await gh("issue", "comment", String(issueNumber), "--body", errorBody);
+      }
       throw new Error(
         `${requiredKeyName} is not available to this workflow run. ` +
         `If you have set it as a repository secret, verify the secret name matches exactly. ` +
@@ -423,7 +449,11 @@ async function main() {
     if (!pushSucceeded) {
       commentBody += `\n\n---\n⚠️ **Warning:** The agent's session state could not be pushed to the repository. Conversation context may not be preserved for follow-up comments. See the [workflow run logs](https://github.com/${repo}/actions) for details.`;
     }
-    await gh("issue", "comment", String(issueNumber), "--body", commentBody);
+    if (isTelegram) {
+      await sendTelegramMessage(issueNumber, commentBody);
+    } else {
+      await gh("issue", "comment", String(issueNumber), "--body", commentBody);
+    }
 
     // Throw push failure AFTER the comment has been posted so the user always
     // receives the agent's response.  The throw still causes the workflow step to
