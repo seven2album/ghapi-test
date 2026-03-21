@@ -187,7 +187,7 @@ async function sendTelegramMessage(chatId: number, text: string) {
   const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text })
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown" })
   });
   if (!res.ok) {
     console.error("Failed to send Telegram message:", await res.text());
@@ -415,9 +415,12 @@ async function main() {
     if (addResult.exitCode !== 0) {
       console.error("git add failed with exit code", addResult.exitCode);
     }
+    let commitSummary = "";
     const { exitCode } = await run(["git", "diff", "--cached", "--quiet"]);
     if (exitCode !== 0) {
       // exitCode !== 0 means there are staged changes to commit.
+      const statResult = await run(["git", "diff", "--cached", "--stat"]);
+      commitSummary = statResult.stdout;
       const commitResult = await run(["git", "commit", "-m", `minimum-intelligence: work on issue #${issueNumber}`]);
       if (commitResult.exitCode !== 0) {
         console.error("git commit failed with exit code", commitResult.exitCode);
@@ -446,6 +449,11 @@ async function main() {
     let commentBody = trimmedText.length > 0
       ? trimmedText.slice(0, MAX_COMMENT_LENGTH)
       : `✅ The agent ran successfully but did not produce a text response. Check the repository for any file changes that were made.\n\nFor full details, see the [workflow run logs](https://github.com/${repo}/actions).`;
+      
+    if (commitSummary) {
+      commentBody += `\n\n---\n**📦 Committed Changes:**\n\`\`\`text\n${commitSummary}\n\`\`\``;
+    }
+    
     if (!pushSucceeded) {
       commentBody += `\n\n---\n⚠️ **Warning:** The agent's session state could not be pushed to the repository. Conversation context may not be preserved for follow-up comments. See the [workflow run logs](https://github.com/${repo}/actions) for details.`;
     }
