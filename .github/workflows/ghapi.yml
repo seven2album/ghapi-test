@@ -67,6 +67,9 @@ on:
   #    repository, or upgrades it when a newer version is available.
   #    Safe to re-run; it installs, upgrades, or skips as appropriate.
   workflow_dispatch:
+  
+  repository_dispatch:
+    types: [tg_webhook] # 這裡要跟 Worker 寫的一樣
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PERMISSIONS
@@ -85,6 +88,23 @@ permissions:
 # JOBS
 # ══════════════════════════════════════════════════════════════════════════════
 jobs:
+
+  ai_job:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'repository_dispatch'
+      && github.repository != 'japer-technology/github-minimum-intelligence'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run GMI
+        env:
+          # 讀取從 Worker 傳過來的指令
+          USER_PROMPT: ${{ github.event.client_payload.text }}
+          TG_CHAT_ID: ${{ github.event.client_payload.chat_id }}
+        run: node index.js
 
   # ────────────────────────────────────────────────────────────────────────────
   # JOB 1 — run-install
